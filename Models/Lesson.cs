@@ -1,0 +1,13 @@
+﻿namespace Api_TutorIdiomas.Models
+{
+    public class Lesson
+    {
+        public int Id { get; set; }
+        public int LanguageId { get; set; }
+        public string Title { get; set; } = string.Empty;
+        public int Level { get; set; }
+        public int XpReward { get; set; } = 50;  // ✅ Asegurar que existe
+        public Language? Language { get; set; }
+        public ICollection<Exercise> Exercises { get; set; } = new List<Exercise>();
+    }
+}
