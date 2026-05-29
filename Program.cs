@@ -91,6 +91,7 @@ builder.Services.AddScoped<ProgressService>();
 builder.Services.AddScoped<PronunciationService>();
 builder.Services.AddScoped<ExerciseScoringService>();
 builder.Services.AddScoped<DynamicExerciseService>();
+builder.Services.AddScoped<TheoryService>();
 
 // ========================================================
 // 7. HTTP CLIENT PARA GROQ API

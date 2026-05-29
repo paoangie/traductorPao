@@ -191,6 +191,51 @@ namespace Api_TutorIdiomas.Controllers
             }
         }
 
+        [HttpGet("me/rank")]
+        public async Task<IActionResult> GetMyRank()
+        {
+            try
+            {
+                var userId = GetUserId();
+                if (userId == null)
+                    return Unauthorized(new { error = "Usuario no autenticado" });
+
+                var userXp = await _progressRepo.GetTotalXpByUserAsync(userId.Value);
+                var userCompleted = await _context.UserProgress
+                    .CountAsync(up => up.UserId == userId.Value && up.Completed);
+
+                var totalUsers = await _context.Users.CountAsync();
+
+                var usersAbove = await _context.Users
+                    .Select(u => new
+                    {
+                        u.Id,
+                        TotalXp = _context.UserProgress
+                            .Where(up => up.UserId == u.Id && up.Completed)
+                            .Sum(up => up.Lesson != null ? up.Lesson.XpReward : 0)
+                    })
+                    .Where(u => u.TotalXp > userXp)
+                    .CountAsync();
+
+                var rank = usersAbove + 1;
+
+                return Ok(new
+                {
+                    email = User.FindFirst(ClaimTypes.Email)?.Value ?? "",
+                    totalXp = userXp,
+                    completedLessons = userCompleted,
+                    rank,
+                    totalUsers,
+                    percentile = totalUsers > 0 ? Math.Round((double)(totalUsers - rank) / totalUsers * 100, 1) : 0
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error al obtener rank del usuario");
+                throw;
+            }
+        }
+
         private Guid? GetUserId()
         {
             var userIdStr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;

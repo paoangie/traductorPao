@@ -4,11 +4,11 @@
 
 | Tecnología | Uso | Estado |
 |------------|-----|--------|
-| React (Web) | Frontend — Componentes reutilizables | Pendiente |
-| ASP.NET Core (Web API) | Backend — Servicios y controladores | ✅ |
-| PostgreSQL | Base de datos — Usuarios, progreso, ejercicios | ✅ |
-| Groq API (Whisper-large-v3) | Voz a texto para pronunciación | ✅ |
-| Groq API (Llama 3) | Corrección gramatical y feedback adaptativo | ✅ |
+| React (Web) | Frontend — Componentes reutilizables | Completado |
+| ASP.NET Core (Web API) | Backend — Servicios y controladores |Completado  |
+| PostgreSQL | Base de datos — Usuarios, progreso, ejercicios | Completado |
+| Groq API (Whisper-large-v3) | Voz a texto para pronunciación | Completado |
+| Groq API (Llama 3) | Corrección gramatical y feedback adaptativo | Completado |
 
 ---
 
