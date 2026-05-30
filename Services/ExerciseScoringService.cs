@@ -5,100 +5,163 @@ namespace Api_TutorIdiomas.Services
     public class ExerciseScoringService
     {
         private const int MinScoreForPass = 70;
+        private const int PerfectScore = 100;
 
-        public ExerciseScoreResult EvaluateTranslation(string userAnswer, string exerciseContent)
+        public ExerciseScoreResult EvaluateTranslation(
+            string userAnswer,
+            string exerciseContent
+        )
         {
-            var content = JsonSerializer.Deserialize<Dictionary<string, string>>(exerciseContent);
-            var expectedAnswer = content?.GetValueOrDefault("answer") ?? "";
+            var content = JsonSerializer.Deserialize<Dictionary<string, string>>(
+                exerciseContent
+            );
 
-            int score = CalculateTranslationScore(userAnswer, expectedAnswer);
-            string feedback = score >= MinScoreForPass
+            var expectedAnswer = content?.GetValueOrDefault("answer") ?? "";
+            var score = CalculateTranslationScore(userAnswer, expectedAnswer);
+
+            var feedback = IsPassingScore(score)
                 ? "¡Correcto!"
                 : "Respuesta incorrecta. Sigue practicando";
 
             return new ExerciseScoreResult(score, feedback);
         }
 
-        public ExerciseScoreResult EvaluateGrammar(string userAnswer, string exerciseContent)
+        public ExerciseScoreResult EvaluateGrammar(
+            string userAnswer,
+            string exerciseContent
+        )
         {
-            var content = JsonSerializer.Deserialize<Dictionary<string, object>>(exerciseContent);
-            var correctAnswer = content?.GetValueOrDefault("correct")?.ToString() ?? "";
+            var content = JsonSerializer.Deserialize<Dictionary<string, object>>(
+                exerciseContent
+            );
 
-            int score = userAnswer?.ToLower() == correctAnswer.ToLower() ? 100 : 0;
-            string feedback = score == 100
-                ? "¡Excelente gramatica!"
+            var correctAnswer = content?.GetValueOrDefault("correct")?.ToString() ?? "";
+            var score = NormalizeAnswer(userAnswer) == NormalizeAnswer(correctAnswer)
+                ? PerfectScore
+                : 0;
+
+            var feedback = score == PerfectScore
+                ? "¡Excelente gramática!"
                 : $"La respuesta correcta es: {correctAnswer}";
 
             return new ExerciseScoreResult(score, feedback);
         }
 
-        public ExerciseScoreResult EvaluatePronunciation(string userAnswer, string? expectedPhrase)
+        public ExerciseScoreResult EvaluatePronunciation(
+            string userAnswer,
+            string? expectedPhrase
+        )
         {
-            int score = CalculateSimilarity(userAnswer ?? "", expectedPhrase ?? "");
-            string feedback = score >= MinScoreForPass
-                ? "Buena pronunciacion"
-                : "Sigue practicando la pronunciacion";
+            var score = CalculateSimilarity(userAnswer ?? "", expectedPhrase ?? "");
+
+            var feedback = IsPassingScore(score)
+                ? "Buena pronunciación"
+                : "Sigue practicando la pronunciación";
 
             return new ExerciseScoreResult(score, feedback);
         }
 
-        public int CalculateTranslationScore(string userAnswer, string expectedAnswer)
+        public int CalculateTranslationScore(
+            string userAnswer,
+            string expectedAnswer
+        )
         {
-            if (string.IsNullOrEmpty(userAnswer) || string.IsNullOrEmpty(expectedAnswer))
+            var normalizedUserAnswer = NormalizeAnswer(userAnswer);
+            var normalizedExpectedAnswer = NormalizeAnswer(expectedAnswer);
+
+            if (string.IsNullOrEmpty(normalizedUserAnswer) ||
+                string.IsNullOrEmpty(normalizedExpectedAnswer))
+            {
+                return 0;
+            }
+
+            if (normalizedUserAnswer == normalizedExpectedAnswer)
+                return PerfectScore;
+
+            var userWords = SplitWords(normalizedUserAnswer);
+            var expectedWords = SplitWords(normalizedExpectedAnswer);
+
+            if (expectedWords.Length == 0)
                 return 0;
 
-            userAnswer = userAnswer.ToLower().Trim();
-            expectedAnswer = expectedAnswer.ToLower().Trim();
+            var matches = userWords.Count(word => expectedWords.Contains(word));
 
-            if (userAnswer == expectedAnswer) return 100;
-
-            var userWords = userAnswer.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            var expectedWords = expectedAnswer.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-
-            if (expectedWords.Length == 0) return 0;
-
-            var matches = userWords.Count(w => expectedWords.Contains(w));
-            return matches * 100 / expectedWords.Length;
+            return matches * PerfectScore / expectedWords.Length;
         }
 
         public int CalculateSimilarity(string input, string expected)
         {
-            if (string.IsNullOrEmpty(input) || string.IsNullOrEmpty(expected))
+            var normalizedInput = NormalizeAnswer(input);
+            var normalizedExpected = NormalizeAnswer(expected);
+
+            if (string.IsNullOrEmpty(normalizedInput) ||
+                string.IsNullOrEmpty(normalizedExpected))
+            {
                 return 0;
+            }
 
-            input = input.ToLower().Trim();
-            expected = expected.ToLower().Trim();
+            if (normalizedInput == normalizedExpected)
+                return PerfectScore;
 
-            if (input == expected) return 100;
+            var longerText = normalizedInput.Length > normalizedExpected.Length
+                ? normalizedInput
+                : normalizedExpected;
 
-            var longer = input.Length > expected.Length ? input : expected;
-            var shorter = input.Length > expected.Length ? expected : input;
+            if (longerText.Length == 0)
+                return PerfectScore;
 
-            if (longer.Length == 0) return 100;
+            var distance = LevenshteinDistance(normalizedInput, normalizedExpected);
 
-            int distance = LevenshteinDistance(input, expected);
-            return (int)((1.0 - (double)distance / longer.Length) * 100);
+            return (int)((1.0 - (double)distance / longerText.Length) * PerfectScore);
         }
 
-        private int LevenshteinDistance(string s, string t)
+        private static bool IsPassingScore(int score)
         {
-            int n = s.Length, m = t.Length;
-            int[,] d = new int[n + 1, m + 1];
+            return score >= MinScoreForPass;
+        }
 
-            if (n == 0) return m;
-            if (m == 0) return n;
+        private static string NormalizeAnswer(string? value)
+        {
+            return value?.Trim().ToLowerInvariant() ?? "";
+        }
 
-            for (int i = 0; i <= n; d[i, 0] = i++) ;
-            for (int j = 0; j <= m; d[0, j] = j++) ;
+        private static string[] SplitWords(string value)
+        {
+            return value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        }
 
-            for (int i = 1; i <= n; i++)
-                for (int j = 1; j <= m; j++)
+        private int LevenshteinDistance(string source, string target)
+        {
+            int sourceLength = source.Length;
+            int targetLength = target.Length;
+            int[,] distance = new int[sourceLength + 1, targetLength + 1];
+
+            if (sourceLength == 0)
+                return targetLength;
+
+            if (targetLength == 0)
+                return sourceLength;
+
+            for (int i = 0; i <= sourceLength; distance[i, 0] = i++) ;
+            for (int j = 0; j <= targetLength; distance[0, j] = j++) ;
+
+            for (int i = 1; i <= sourceLength; i++)
+            {
+                for (int j = 1; j <= targetLength; j++)
                 {
-                    int cost = (t[j - 1] == s[i - 1]) ? 0 : 1;
-                    d[i, j] = Math.Min(Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1), d[i - 1, j - 1] + cost);
-                }
+                    int cost = target[j - 1] == source[i - 1] ? 0 : 1;
 
-            return d[n, m];
+                    distance[i, j] = Math.Min(
+                        Math.Min(
+                            distance[i - 1, j] + 1,
+                            distance[i, j - 1] + 1
+                        ),
+                        distance[i - 1, j - 1] + cost
+                    );
+                }
+            }
+
+            return distance[sourceLength, targetLength];
         }
     }
 
