@@ -2,7 +2,7 @@ using System.Text.Json;
 
 namespace Api_TutorIdiomas.Services
 {
-    public class ExerciseScoringService
+    public class ExerciseScoringService : IExerciseScoringService
     {
         private const int MinScoreForPass = 70;
         private const int PerfectScore = 100;
@@ -36,6 +36,7 @@ namespace Api_TutorIdiomas.Services
             );
 
             var correctAnswer = content?.GetValueOrDefault("correct")?.ToString() ?? "";
+
             var score = NormalizeAnswer(userAnswer) == NormalizeAnswer(correctAnswer)
                 ? PerfectScore
                 : 0;

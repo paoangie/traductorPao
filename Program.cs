@@ -4,29 +4,32 @@ using Api_TutorIdiomas.Middleware;
 using Api_TutorIdiomas.Repositories;
 using Api_TutorIdiomas.Services;
 using Api_TutorIdiomas.Settings;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
-using System.Text;
 using Microsoft.OpenApi.Models;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // ========================================================
-// 1. CONFIGURACI�N DE BASE DE DATOS (PostgreSQL)
+// 1. CONFIGURACIÓN DE BASE DE DATOS (PostgreSQL)
 // ========================================================
 var connectionString = builder.Configuration.GetConnectionString("conexion");
+
 builder.Services.AddDbContext<BdContext>(options =>
     options.UseNpgsql(connectionString));
 
 // ========================================================
-// 2. CONFIGURACI�N DE JWT (igual que el ejemplo)
+// 2. CONFIGURACIÓN DE JWT
 // ========================================================
 var jwtSettings = new JwtSettings();
 builder.Configuration.GetSection("Jwt").Bind(jwtSettings);
+
 builder.Services.AddSingleton(jwtSettings);
 
 var key = Encoding.ASCII.GetBytes(jwtSettings.Key);
+
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
@@ -38,10 +41,13 @@ builder.Services.AddAuthentication(options =>
     {
         ValidateIssuerSigningKey = true,
         IssuerSigningKey = new SymmetricSecurityKey(key),
+
         ValidateIssuer = true,
         ValidIssuer = jwtSettings.Issuer,
+
         ValidateAudience = true,
         ValidAudience = jwtSettings.Audience,
+
         ValidateLifetime = true,
         ClockSkew = TimeSpan.Zero
     };
@@ -50,24 +56,33 @@ builder.Services.AddAuthentication(options =>
 builder.Services.AddAuthorization();
 
 // ========================================================
-// 3. CONFIGURACI�N DE CORS (m�ltiples or�genes)
+// 3. CONFIGURACIÓN DE CORS
 // ========================================================
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowReactApp", policy =>
     {
-        policy.WithOrigins("http://localhost:3000", "http://localhost:5173", "http://localhost:4200")
-              .AllowAnyMethod()
-              .AllowAnyHeader()
-              .AllowCredentials();
+        policy.WithOrigins(
+                "http://localhost:3000",
+                "http://localhost:5173",
+                "http://localhost:4200"
+            )
+            .AllowAnyMethod()
+            .AllowAnyHeader()
+            .AllowCredentials();
     });
 });
 
 // ========================================================
-// 4. CONFIGURACI�N DE SETTINGS (JWT + Groq)
+// 4. CONFIGURACIÓN DE SETTINGS
 // ========================================================
-builder.Services.Configure<JwtSettings>(builder.Configuration.GetSection("Jwt"));
-builder.Services.Configure<GroqSettings>(builder.Configuration.GetSection("Groq"));
+builder.Services.Configure<JwtSettings>(
+    builder.Configuration.GetSection("Jwt")
+);
+
+builder.Services.Configure<GroqSettings>(
+    builder.Configuration.GetSection("Groq")
+);
 
 // ========================================================
 // 5. REGISTRO DE REPOSITORIOS
@@ -89,7 +104,11 @@ builder.Services.AddScoped<TokenService>();
 builder.Services.AddScoped<GroqAiService>();
 builder.Services.AddScoped<ProgressService>();
 builder.Services.AddScoped<PronunciationService>();
-builder.Services.AddScoped<ExerciseScoringService>();
+
+// Refactor aplicado: el controlador depende de la interfaz,
+// no directamente de la clase concreta.
+builder.Services.AddScoped<IExerciseScoringService, ExerciseScoringService>();
+
 builder.Services.AddScoped<DynamicExerciseService>();
 builder.Services.AddScoped<TheoryService>();
 
@@ -99,19 +118,22 @@ builder.Services.AddScoped<TheoryService>();
 builder.Services.AddHttpClient<GroqAiService>();
 
 // ========================================================
-// 8. CONTROLLERS (con manejo de ciclos JSON + validación)
+// 8. CONTROLLERS
 // ========================================================
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<ValidationFilter>();
 })
-    .AddJsonOptions(x =>
-        x.JsonSerializerOptions.ReferenceHandler = System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles);
+.AddJsonOptions(options =>
+{
+    options.JsonSerializerOptions.ReferenceHandler =
+        System.Text.Json.Serialization.ReferenceHandler.IgnoreCycles;
+});
 
 builder.Services.AddEndpointsApiExplorer();
 
 // ========================================================
-// 9. SWAGGER CON SOPORTE JWT (mejorado)
+// 9. SWAGGER CON SOPORTE JWT
 // ========================================================
 builder.Services.AddSwaggerGen(c =>
 {
@@ -122,15 +144,15 @@ builder.Services.AddSwaggerGen(c =>
         Description = "API para plataforma adaptativa de aprendizaje de idiomas con IA",
         Contact = new OpenApiContact
         {
-            Name = "Tu Nombre",
-            Email = "tuemail@ejemplo.com"
+            Name = "PaoLingua",
+            Email = "contacto@paolingua.com"
         }
     });
 
     c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
     {
         In = ParameterLocation.Header,
-        Description = "Ingrese el token JWT (ejemplo: Bearer {token})",
+        Description = "Ingrese el token JWT. Ejemplo: Bearer {token}",
         Name = "Authorization",
         Type = SecuritySchemeType.Http,
         BearerFormat = "JWT",
@@ -148,13 +170,13 @@ builder.Services.AddSwaggerGen(c =>
                     Id = "Bearer"
                 }
             },
-            new string[] { }
+            Array.Empty<string>()
         }
     });
 });
 
 // ========================================================
-// 10. CONSTRUIR LA APLICACI�N
+// 10. CONSTRUIR LA APLICACIÓN
 // ========================================================
 var app = builder.Build();
 
@@ -170,37 +192,42 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
 app.UseCors("AllowReactApp");
+
 app.UseAuthentication();
 app.UseAuthorization();
+
 app.MapControllers();
 
 // ========================================================
-// 12. APLICAR MIGRACIONES AUTOM�TICAMENTE (mejorado)
+// 12. APLICAR MIGRACIONES AUTOMÁTICAMENTE
 // ========================================================
 using (var scope = app.Services.CreateScope())
 {
     var services = scope.ServiceProvider;
+
     try
     {
         var context = services.GetRequiredService<BdContext>();
+
         if ((await context.Database.GetPendingMigrationsAsync()).Any())
         {
             await context.Database.MigrateAsync();
-            Console.WriteLine("? Base de datos actualizada correctamente.");
+            Console.WriteLine("Base de datos actualizada correctamente.");
         }
         else
         {
-            Console.WriteLine("?? Base de datos est� actualizada.");
+            Console.WriteLine("Base de datos está actualizada.");
         }
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"? Error al migrar la base de datos: {ex.Message}");
+        Console.WriteLine($"Error al migrar la base de datos: {ex.Message}");
     }
 }
 
 // ========================================================
-// 13. EJECUTAR
+// 13. EJECUTAR APLICACIÓN
 // ========================================================
 app.Run();

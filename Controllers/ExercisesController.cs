@@ -20,7 +20,7 @@ namespace Api_TutorIdiomas.Controllers
         private readonly IProgressRepository _progressRepo;
         private readonly ILessonRepository _lessonRepo;
         private readonly IMistakeRepository _mistakeRepo;
-        private readonly ExerciseScoringService _scoringService;
+        private readonly IExerciseScoringService _scoringService;
         private readonly DynamicExerciseService _dynamicExerciseService;
         private readonly ILogger<ExercisesController> _logger;
 
@@ -29,7 +29,7 @@ namespace Api_TutorIdiomas.Controllers
             IProgressRepository progressRepo,
             ILessonRepository lessonRepo,
             IMistakeRepository mistakeRepo,
-            ExerciseScoringService scoringService,
+            IExerciseScoringService scoringService,
             DynamicExerciseService dynamicExerciseService,
             ILogger<ExercisesController> logger)
         {
