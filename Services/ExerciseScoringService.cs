@@ -7,45 +7,95 @@ namespace Api_TutorIdiomas.Services
         private const int MinScoreForPass = 70;
         private const int PerfectScore = 100;
 
-        public ExerciseScoreResult EvaluateTranslation(
-            string userAnswer,
-            string exerciseContent
-        )
+        private readonly GroqAiService _groqAiService;
+        private readonly ILogger<ExerciseScoringService> _logger;
+
+        public ExerciseScoringService(
+            GroqAiService groqAiService,
+            ILogger<ExerciseScoringService> logger)
         {
-            var content = JsonSerializer.Deserialize<Dictionary<string, string>>(
-                exerciseContent
-            );
-
-            var expectedAnswer = content?.GetValueOrDefault("answer") ?? "";
-            var score = CalculateTranslationScore(userAnswer, expectedAnswer);
-
-            var feedback = IsPassingScore(score)
-                ? "¡Correcto!"
-                : "Respuesta incorrecta. Sigue practicando";
-
-            return new ExerciseScoreResult(score, feedback);
+            _groqAiService = groqAiService;
+            _logger = logger;
         }
 
-        public ExerciseScoreResult EvaluateGrammar(
+        public async Task<ExerciseScoreResult> EvaluateTranslationAsync(
             string userAnswer,
-            string exerciseContent
+            string exerciseContent,
+            string languageName,
+            string lessonTitle,
+            string theoryContext
         )
         {
-            var content = JsonSerializer.Deserialize<Dictionary<string, object>>(
-                exerciseContent
-            );
+            var content = DeserializeContent(exerciseContent);
+            var question = GetString(content, "question");
+            var expectedAnswer = GetString(content, "answer");
 
-            var correctAnswer = content?.GetValueOrDefault("correct")?.ToString() ?? "";
+            if (string.IsNullOrWhiteSpace(expectedAnswer))
+                throw new ArgumentException("El ejercicio de traducción no tiene respuesta esperada");
 
-            var score = NormalizeAnswer(userAnswer) == NormalizeAnswer(correctAnswer)
-                ? PerfectScore
-                : 0;
+            try
+            {
+                var aiResult = await _groqAiService.EvaluateTranslationAsync(
+                    question,
+                    userAnswer,
+                    expectedAnswer,
+                    languageName,
+                    lessonTitle,
+                    theoryContext
+                );
 
-            var feedback = score == PerfectScore
-                ? "¡Excelente gramática!"
-                : $"La respuesta correcta es: {correctAnswer}";
+                return new ExerciseScoreResult(aiResult.Score, aiResult.Feedback);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or JsonException)
+            {
+                _logger.LogWarning(ex, "No se pudo evaluar traducción con IA; se usará respaldo local controlado");
+                var score = CalculateTranslationScore(userAnswer, expectedAnswer);
+                var feedback = IsPassingScore(score)
+                    ? "Respuesta aceptada por comparación local. La retroalimentación de IA no estuvo disponible."
+                    : $"La respuesta no coincide con la esperada para esta lección. Respuesta esperada: {expectedAnswer}";
 
-            return new ExerciseScoreResult(score, feedback);
+                return new ExerciseScoreResult(score, feedback);
+            }
+        }
+
+        public async Task<ExerciseScoreResult> EvaluateGrammarAsync(
+            string userAnswer,
+            string exerciseContent,
+            string languageName,
+            string lessonTitle,
+            string theoryContext
+        )
+        {
+            var content = DeserializeContent(exerciseContent);
+            var question = GetString(content, "question");
+            var correctAnswer = GetString(content, "correct");
+
+            if (string.IsNullOrWhiteSpace(correctAnswer))
+                throw new ArgumentException("El ejercicio de gramática no tiene respuesta correcta");
+
+            try
+            {
+                var aiResult = await _groqAiService.EvaluateGrammarAsync(
+                    question,
+                    userAnswer,
+                    correctAnswer,
+                    languageName,
+                    lessonTitle,
+                    theoryContext
+                );
+
+                return new ExerciseScoreResult(aiResult.Score, aiResult.Feedback);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or JsonException)
+            {
+                _logger.LogWarning(ex, "No se pudo evaluar gramática con IA; se usará respaldo local controlado");
+                var score = NormalizeAnswer(userAnswer) == NormalizeAnswer(correctAnswer) ? PerfectScore : 0;
+                var feedback = score == PerfectScore
+                    ? "Respuesta correcta por comparación local. La retroalimentación de IA no estuvo disponible."
+                    : $"La respuesta no coincide con la regla de esta lección. Respuesta esperada: {correctAnswer}";
+
+                return new ExerciseScoreResult(score, feedback);
+            }
         }
 
         public ExerciseScoreResult EvaluatePronunciation(
@@ -56,8 +106,8 @@ namespace Api_TutorIdiomas.Services
             var score = CalculateSimilarity(userAnswer ?? "", expectedPhrase ?? "");
 
             var feedback = IsPassingScore(score)
-                ? "Buena pronunciación"
-                : "Sigue practicando la pronunciación";
+                ? "Pronunciación aceptada por similitud textual."
+                : "La pronunciación reconocida no coincide suficientemente con la frase esperada.";
 
             return new ExerciseScoreResult(score, feedback);
         }
@@ -112,8 +162,22 @@ namespace Api_TutorIdiomas.Services
                 return PerfectScore;
 
             var distance = LevenshteinDistance(normalizedInput, normalizedExpected);
+            var score = (int)((1.0 - (double)distance / longerText.Length) * PerfectScore);
 
-            return (int)((1.0 - (double)distance / longerText.Length) * PerfectScore);
+            return Math.Clamp(score, 0, PerfectScore);
+        }
+
+        private static Dictionary<string, JsonElement> DeserializeContent(string exerciseContent)
+        {
+            return JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(exerciseContent)
+                ?? new Dictionary<string, JsonElement>();
+        }
+
+        private static string GetString(Dictionary<string, JsonElement> content, string key)
+        {
+            return content.TryGetValue(key, out var value) && value.ValueKind != JsonValueKind.Null
+                ? value.ToString()
+                : string.Empty;
         }
 
         private static bool IsPassingScore(int score)

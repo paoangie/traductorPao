@@ -10,19 +10,36 @@ namespace Api_TutorIdiomas.Repositories
         public LessonRepository(BdContext context) => _context = context;
 
         public Task<List<Lesson>> GetAllAsync() =>
-            _context.Lessons.Include(l => l.Language).Include(l => l.Exercises).ToListAsync();
+            _context.Lessons
+                .Include(l => l.Language)
+                .Include(l => l.Exercises)
+                .OrderBy(l => l.LanguageId)
+                .ThenBy(l => l.Level)
+                .ThenBy(l => l.Id)
+                .ToListAsync();
 
         public Task<Lesson?> GetByIdAsync(int id) =>
-            _context.Lessons.Include(l => l.Language).Include(l => l.Exercises)
-                            .FirstOrDefaultAsync(l => l.Id == id);
+            _context.Lessons
+                .Include(l => l.Language)
+                .Include(l => l.Exercises)
+                .FirstOrDefaultAsync(l => l.Id == id);
 
         public Task<List<Lesson>> GetByLanguageAsync(int languageId) =>
-            _context.Lessons.Where(l => l.LanguageId == languageId)
-                            .Include(l => l.Exercises)
-                            .ToListAsync();
+            _context.Lessons
+                .Where(l => l.LanguageId == languageId)
+                .Include(l => l.Language)
+                .Include(l => l.Exercises)
+                .OrderBy(l => l.Level)
+                .ThenBy(l => l.Id)
+                .ToListAsync();
 
         public Task<List<Lesson>> GetByLevelAsync(int level) =>
-            _context.Lessons.Where(l => l.Level == level).ToListAsync();
+            _context.Lessons
+                .Where(l => l.Level == level)
+                .Include(l => l.Language)
+                .OrderBy(l => l.LanguageId)
+                .ThenBy(l => l.Id)
+                .ToListAsync();
 
         public async Task AddAsync(Lesson lesson) =>
             await _context.Lessons.AddAsync(lesson);

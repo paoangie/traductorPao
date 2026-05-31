@@ -2,14 +2,20 @@ namespace Api_TutorIdiomas.Services
 {
     public interface IExerciseScoringService
     {
-        ExerciseScoreResult EvaluateTranslation(
+        Task<ExerciseScoreResult> EvaluateTranslationAsync(
             string userAnswer,
-            string exerciseContent
+            string exerciseContent,
+            string languageName,
+            string lessonTitle,
+            string theoryContext
         );
 
-        ExerciseScoreResult EvaluateGrammar(
+        Task<ExerciseScoreResult> EvaluateGrammarAsync(
             string userAnswer,
-            string exerciseContent
+            string exerciseContent,
+            string languageName,
+            string lessonTitle,
+            string theoryContext
         );
 
         ExerciseScoreResult EvaluatePronunciation(

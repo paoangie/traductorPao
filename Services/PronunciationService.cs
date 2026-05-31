@@ -6,6 +6,9 @@ namespace Api_TutorIdiomas.Services
 {
     public class PronunciationService
     {
+        private const int MaxAudioSizeBytes = 10 * 1024 * 1024;
+        private const int DynamicExerciseIdLimit = 1000000;
+
         private readonly GroqAiService _groq;
         private readonly IPronunciationRepository _pronunciationRepo;
         private readonly ILogger<PronunciationService> _logger;
@@ -20,149 +23,193 @@ namespace Api_TutorIdiomas.Services
             _logger = logger;
         }
 
-        public async Task<FeedbackResponse> EvaluatePronunciationAsync(PronunciationRequest request, Guid userId)
+        public async Task<FeedbackResponse> EvaluatePronunciationAsync(
+            PronunciationRequest request,
+            Guid userId
+        )
         {
-            try
+            var (audioBytes, contentType) = DecodeAudioBase64(request.AudioBase64);
+            ValidateAudio(audioBytes);
+
+            var detectedContentType = DetectAudioContentType(audioBytes) ?? contentType;
+            var expectedPhrase = request.ExpectedPhrase?.Trim() ?? "";
+
+            if (string.IsNullOrWhiteSpace(expectedPhrase))
+                throw new ArgumentException("La frase esperada no puede estar vacía");
+
+            var recognizedText = await _groq.TranscribeAudioAsync(audioBytes, detectedContentType);
+
+            if (string.IsNullOrWhiteSpace(recognizedText))
+                throw new InvalidOperationException("La IA no pudo reconocer texto en el audio grabado");
+
+            var score = CalculateSimilarity(recognizedText, expectedPhrase);
+            var aiFeedback = await _groq.GeneratePronunciationFeedbackAsync(recognizedText, expectedPhrase);
+
+            if (request.ExerciseId < DynamicExerciseIdLimit)
             {
-                byte[] audioBytes;
-                try
+                var attempt = new PronunciationAttempt
                 {
-                    audioBytes = Convert.FromBase64String(request.AudioBase64);
-                }
-                catch (FormatException ex)
-                {
-                    _logger.LogWarning(ex, "Audio Base64 inválido enviado por usuario {UserId}", userId);
-                    throw new FormatException("El formato del audio no es válido");
-                }
-
-                if (audioBytes.Length == 0)
-                    throw new ArgumentException("El audio está vacío");
-
-                if (audioBytes.Length > 10 * 1024 * 1024)
-                    throw new ArgumentException("El audio excede el tamaño máximo permitido (10MB)");
-
-                var recognizedText = await _groq.TranscribeAudioAsync(audioBytes);
-
-                if (string.IsNullOrWhiteSpace(recognizedText))
-                {
-                    _logger.LogWarning("Whisper devolvió texto vacío para usuario {UserId}", userId);
-                    recognizedText = "(no se pudo reconocer el audio)";
-                }
-
-                var feedback = await _groq.CorrectGrammarAsync(recognizedText, request.ExpectedPhrase);
-                var score = CalculateSimilarity(recognizedText.ToLower(), request.ExpectedPhrase.ToLower());
-
-                if (request.ExerciseId < 1000000)
-                {
-                    var attempt = new PronunciationAttempt
-                    {
-                        UserId = userId,
-                        ExerciseId = request.ExerciseId,
-                        RecognizedText = recognizedText,
-                        ExpectedText = request.ExpectedPhrase,
-                        Score = score,
-                        AudioUrl = "inline",
-                        CreatedAt = DateTime.UtcNow
-                    };
-
-                    await _pronunciationRepo.AddAttemptAsync(attempt);
-                    await _pronunciationRepo.SaveChangesAsync();
-                }
-
-                _logger.LogInformation("Pronunciación evaluada para usuario {UserId}: score={Score}", userId, score);
-
-                return new FeedbackResponse
-                {
+                    UserId = userId,
+                    ExerciseId = request.ExerciseId,
                     RecognizedText = recognizedText,
+                    ExpectedText = expectedPhrase,
                     Score = score,
-                    GrammarFeedback = feedback,
-                    Suggestions = score >= 80 ? "¡Excelente! Sigue asi" : "Sigue practicando los sonidos dificiles"
+                    AudioUrl = "inline",
+                    CreatedAt = DateTime.UtcNow
                 };
+
+                await _pronunciationRepo.AddAttemptAsync(attempt);
+                await _pronunciationRepo.SaveChangesAsync();
             }
-            catch (HttpRequestException)
+
+            _logger.LogInformation(
+                "Pronunciación evaluada con IA para usuario {UserId}: score={Score}",
+                userId,
+                score
+            );
+
+            return new FeedbackResponse
             {
-                throw;
-            }
-            catch (TaskCanceledException)
-            {
-                throw;
-            }
-            catch (FormatException)
-            {
-                throw;
-            }
-            catch (ArgumentException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error inesperado al evaluar pronunciación para usuario {UserId}", userId);
-                throw new InvalidOperationException("Error al procesar la evaluación de pronunciación");
-            }
+                RecognizedText = recognizedText,
+                Score = score,
+                GrammarFeedback = aiFeedback.Feedback,
+                Suggestions = aiFeedback.Suggestions
+            };
         }
 
-        public async Task<string> GetWordPracticeAsync(string word)
+        public Task<WordPracticeFeedback> GetWordPracticeAsync(string word)
         {
-            var prompt = $@"
-Eres un tutor de pronunciación. La palabra a practicar es: '{word}'.
-Proporciona:
-1. Desglose fonético simplificado
-2. Consejos de pronunciación (máximo 3)
-3. Ejemplo en una frase corta
+            if (string.IsNullOrWhiteSpace(word))
+                throw new ArgumentException("La palabra es requerida");
 
-Respuesta en español, máximo 200 palabras.";
-
-            return await _groq.QueryLlamaAsync(prompt);
+            return _groq.GenerateWordPracticeAsync(word.Trim());
         }
 
         public async Task<List<PronunciationHistoryDto>> GetUserHistoryAsync(Guid userId)
         {
             var attempts = await _pronunciationRepo.GetByUserAsync(userId);
 
-            return attempts.Select(a => new PronunciationHistoryDto
+            return attempts.Select(attempt => new PronunciationHistoryDto
             {
-                Id = a.Id,
-                RecognizedText = a.RecognizedText,
-                ExpectedText = a.ExpectedText,
-                Score = a.Score,
-                CreatedAt = a.CreatedAt,
-                ExerciseId = a.ExerciseId
+                Id = attempt.Id,
+                RecognizedText = attempt.RecognizedText,
+                ExpectedText = attempt.ExpectedText,
+                Score = attempt.Score,
+                CreatedAt = attempt.CreatedAt,
+                ExerciseId = attempt.ExerciseId
             }).ToList();
         }
 
-        private int CalculateSimilarity(string recognized, string expected)
+        private static (byte[] AudioBytes, string ContentType) DecodeAudioBase64(string audioBase64)
         {
-            if (recognized == expected) return 100;
+            if (string.IsNullOrWhiteSpace(audioBase64))
+                throw new ArgumentException("El audio está vacío");
 
-            var longer = recognized.Length > expected.Length ? recognized : expected;
-            var shorter = recognized.Length > expected.Length ? expected : recognized;
+            var cleanBase64 = audioBase64;
+            var contentType = "audio/webm";
+
+            if (audioBase64.Contains(','))
+            {
+                var parts = audioBase64.Split(',', 2);
+                cleanBase64 = parts[1];
+
+                if (parts[0].StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                {
+                    var header = parts[0][5..];
+                    var typePart = header.Split(';')[0];
+                    if (!string.IsNullOrWhiteSpace(typePart))
+                        contentType = typePart;
+                }
+            }
+
+            return (Convert.FromBase64String(cleanBase64), contentType);
+        }
+
+        private static string? DetectAudioContentType(byte[] audioBytes)
+        {
+            if (audioBytes.Length >= 4)
+            {
+                if (audioBytes[0] == 0x1A && audioBytes[1] == 0x45 && audioBytes[2] == 0xDF && audioBytes[3] == 0xA3)
+                    return "audio/webm";
+
+                if (audioBytes[0] == 'O' && audioBytes[1] == 'g' && audioBytes[2] == 'g' && audioBytes[3] == 'S')
+                    return "audio/ogg";
+
+                if (audioBytes[0] == 'R' && audioBytes[1] == 'I' && audioBytes[2] == 'F' && audioBytes[3] == 'F')
+                    return "audio/wav";
+
+                if (audioBytes[0] == 'I' && audioBytes[1] == 'D' && audioBytes[2] == '3')
+                    return "audio/mpeg";
+            }
+
+            if (audioBytes.Length >= 12 && audioBytes[4] == 'f' && audioBytes[5] == 't' && audioBytes[6] == 'y' && audioBytes[7] == 'p')
+                return "audio/mp4";
+
+            return null;
+        }
+
+        private static void ValidateAudio(byte[] audioBytes)
+        {
+            if (audioBytes.Length == 0)
+                throw new ArgumentException("El audio está vacío");
+
+            if (audioBytes.Length > MaxAudioSizeBytes)
+                throw new ArgumentException("El audio excede el tamaño máximo permitido");
+        }
+
+        private static int CalculateSimilarity(string recognized, string expected)
+        {
+            var normalizedRecognized = Normalize(recognized);
+            var normalizedExpected = Normalize(expected);
+
+            if (normalizedRecognized == normalizedExpected) return 100;
+
+            var longer = normalizedRecognized.Length > normalizedExpected.Length
+                ? normalizedRecognized
+                : normalizedExpected;
 
             if (longer.Length == 0) return 100;
 
-            var distance = LevenshteinDistance(recognized, expected);
-            return (int)((1.0 - (double)distance / longer.Length) * 100);
+            var distance = LevenshteinDistance(normalizedRecognized, normalizedExpected);
+            var score = (int)((1.0 - (double)distance / longer.Length) * 100);
+
+            return Math.Clamp(score, 0, 100);
         }
 
-        private int LevenshteinDistance(string s, string t)
+        private static string Normalize(string value)
         {
-            int n = s.Length, m = t.Length;
-            int[,] d = new int[n + 1, m + 1];
+            return value.Trim().ToLowerInvariant();
+        }
 
-            if (n == 0) return m;
-            if (m == 0) return n;
+        private static int LevenshteinDistance(string source, string target)
+        {
+            int sourceLength = source.Length;
+            int targetLength = target.Length;
+            int[,] distance = new int[sourceLength + 1, targetLength + 1];
 
-            for (int i = 0; i <= n; d[i, 0] = i++) ;
-            for (int j = 0; j <= m; d[0, j] = j++) ;
+            if (sourceLength == 0) return targetLength;
+            if (targetLength == 0) return sourceLength;
 
-            for (int i = 1; i <= n; i++)
-                for (int j = 1; j <= m; j++)
+            for (int i = 0; i <= sourceLength; distance[i, 0] = i++) ;
+            for (int j = 0; j <= targetLength; distance[0, j] = j++) ;
+
+            for (int i = 1; i <= sourceLength; i++)
+            {
+                for (int j = 1; j <= targetLength; j++)
                 {
-                    int cost = (t[j - 1] == s[i - 1]) ? 0 : 1;
-                    d[i, j] = Math.Min(Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1), d[i - 1, j - 1] + cost);
-                }
+                    int cost = target[j - 1] == source[i - 1] ? 0 : 1;
 
-            return d[n, m];
+                    distance[i, j] = Math.Min(
+                        Math.Min(
+                            distance[i - 1, j] + 1,
+                            distance[i, j - 1] + 1
+                        ),
+                        distance[i - 1, j - 1] + cost
+                    );
+                }
+            }
+
+            return distance[sourceLength, targetLength];
         }
     }
 

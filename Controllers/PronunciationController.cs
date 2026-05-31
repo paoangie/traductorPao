@@ -38,6 +38,16 @@ namespace Api_TutorIdiomas.Controllers
                 var result = await _pronunciationService.EvaluatePronunciationAsync(request, userId.Value);
                 return Ok(result);
             }
+            catch (ArgumentException ex)
+            {
+                _logger.LogWarning(ex, "Datos de audio inválidos");
+                return BadRequest(new { error = ex.Message });
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogWarning(ex, "Error de reconocimiento de audio");
+                return BadRequest(new { error = ex.Message });
+            }
             catch (FormatException ex)
             {
                 _logger.LogWarning(ex, "Formato de audio inválido");
@@ -67,15 +77,15 @@ namespace Api_TutorIdiomas.Controllers
                 if (string.IsNullOrWhiteSpace(request.Word))
                     return BadRequest(new { error = "La palabra es requerida" });
 
-                var feedback = await _pronunciationService.GetWordPracticeAsync(request.Word);
+                var practice = await _pronunciationService.GetWordPracticeAsync(request.Word);
 
                 return Ok(new
                 {
                     word = request.Word,
-                    phoneticHint = GetPhoneticHint(request.Word),
-                    tips = GetPronunciationTips(request.Word),
-                    example = GetExampleSentence(request.Word),
-                    feedback
+                    phoneticHint = practice.PhoneticHint,
+                    tips = practice.Tips,
+                    example = practice.Example,
+                    feedback = practice.Feedback
                 });
             }
             catch (HttpRequestException ex)
@@ -226,30 +236,6 @@ namespace Api_TutorIdiomas.Controllers
             return Guid.Parse(userIdStr);
         }
 
-        private string GetPhoneticHint(string word)
-        {
-            var phonetics = new Dictionary<string, string>
-            {
-                { "hello", "/həˈləʊ/" },
-                { "world", "/wɜːld/" },
-                { "pronunciation", "/prəˌnʌnsiˈeɪʃən/" },
-                { "language", "/ˈlæŋɡwɪdʒ/" }
-            };
-
-            return phonetics.TryGetValue(word.ToLower(), out var phonetic) ? phonetic : "/" + word.ToLower() + "/";
-        }
-
-        private string GetPronunciationTips(string word)
-        {
-            if (word.Length > 5)
-                return $"Divide '{word}' en sílabas para practicar";
-            return $"Repite '{word}' lentamente, luego más rápido";
-        }
-
-        private string GetExampleSentence(string word)
-        {
-            return $"Practica diciendo: 'The word {word} is important to learn'";
-        }
     }
 
     public class PracticeWordRequest

@@ -178,6 +178,10 @@ namespace Api_TutorIdiomas.Controllers
         {
             try
             {
+                var role = User.FindFirst(ClaimTypes.Role)?.Value;
+                if (role != "Admin")
+                    return Forbid();
+
                 if (limit < 1 || limit > 100)
                     limit = 10;
 

@@ -15,5 +15,9 @@ namespace Api_TutorIdiomas.Models.DTOs
         public string? ExerciseType { get; set; }
 
         public string? ExerciseContent { get; set; }
+
+        public int? LessonId { get; set; }
+
+        public int? LanguageId { get; set; }
     }
 }

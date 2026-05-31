@@ -4,6 +4,10 @@ namespace Api_TutorIdiomas.Models.DTOs
     {
         public string ExerciseId { get; set; } = string.Empty;
         public string Type { get; set; } = string.Empty;
+        public int LessonId { get; set; }
+        public string LessonTitle { get; set; } = string.Empty;
+        public int LanguageId { get; set; }
+        public string LanguageName { get; set; } = string.Empty;
         public string Question { get; set; } = string.Empty;
         public string? Answer { get; set; }
         public string? Correct { get; set; }

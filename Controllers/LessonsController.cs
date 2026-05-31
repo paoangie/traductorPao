@@ -57,7 +57,8 @@ namespace Api_TutorIdiomas.Controllers
                 {
                     var userId = Guid.Parse(userIdStr);
                     var progress = await _progressRepo.GetByUserAsync(userId);
-                    var result = lessons.Select(l => new {
+                    var result = lessons.Select(l => new
+                    {
                         l.Id,
                         l.Title,
                         l.Level,
@@ -143,7 +144,7 @@ namespace Api_TutorIdiomas.Controllers
                     languageName = l.Language?.Name ?? "Desconocido",
                     hasTheory = !string.IsNullOrEmpty(l.TheoryContent) && l.TheoryContent != "{}",
                     exerciseCount = l.Exercises?.Count ?? 0
-                }).OrderBy(l => l.languageId).ThenBy(l => l.Level);
+                }).OrderBy(l => l.languageId).ThenBy(l => l.Level).ThenBy(l => l.Id);
 
                 return Ok(result);
             }
