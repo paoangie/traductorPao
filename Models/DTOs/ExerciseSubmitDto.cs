@@ -19,5 +19,10 @@ namespace Api_TutorIdiomas.Models.DTOs
         public int? LessonId { get; set; }
 
         public int? LanguageId { get; set; }
+
+        [Range(1, int.MaxValue, ErrorMessage = "El número de intento debe ser mayor o igual a 1")]
+        public int AttemptNumber { get; set; } = 1;
+
+        public bool IsRetry => AttemptNumber > 1;
     }
 }

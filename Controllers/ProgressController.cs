@@ -15,17 +15,20 @@ namespace Api_TutorIdiomas.Controllers
     {
         private readonly IProgressRepository _progressRepo;
         private readonly IUserRepository _userRepo;
+        private readonly ProgressService _progressService;
         private readonly BdContext _context;
         private readonly ILogger<ProgressController> _logger;
 
         public ProgressController(
             IProgressRepository progressRepo,
             IUserRepository userRepo,
+            ProgressService progressService,
             BdContext context,
             ILogger<ProgressController> logger)
         {
             _progressRepo = progressRepo;
             _userRepo = userRepo;
+            _progressService = progressService;
             _context = context;
             _logger = logger;
         }
@@ -36,6 +39,7 @@ namespace Api_TutorIdiomas.Controllers
             try
             {
                 var userId = GetUserId();
+
                 if (userId == null)
                     return Unauthorized(new { error = "Usuario no autenticado" });
 
@@ -58,8 +62,12 @@ namespace Api_TutorIdiomas.Controllers
                     streak,
                     totalLessons,
                     completedLessons,
-                    completionPercentage = totalLessons > 0 ? (completedLessons * 100 / totalLessons) : 0,
-                    averageScore = totalLessons > 0 ? totalScore / totalLessons : 0
+                    completionPercentage = totalLessons > 0
+                        ? completedLessons * 100 / totalLessons
+                        : 0,
+                    averageScore = totalLessons > 0
+                        ? totalScore / totalLessons
+                        : 0
                 });
             }
             catch (Exception ex)
@@ -75,10 +83,15 @@ namespace Api_TutorIdiomas.Controllers
             try
             {
                 var userId = GetUserId();
+
                 if (userId == null)
                     return Unauthorized(new { error = "Usuario no autenticado" });
 
-                var progress = await _progressRepo.GetByUserAndLanguageAsync(userId.Value, languageId);
+                var progress = await _progressRepo.GetByUserAndLanguageAsync(
+                    userId.Value,
+                    languageId
+                );
+
                 var currentLevel = await GetUserLevel(userId.Value, languageId);
 
                 return Ok(new
@@ -99,36 +112,57 @@ namespace Api_TutorIdiomas.Controllers
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error al obtener progreso por idioma {LanguageId}", languageId);
+                _logger.LogError(
+                    ex,
+                    "Error al obtener progreso por idioma {LanguageId}",
+                    languageId
+                );
+
                 throw;
             }
         }
 
         [HttpPost("lesson/{lessonId}/complete")]
-        public async Task<IActionResult> CompleteLesson(int lessonId, [FromBody] CompleteLessonRequest request)
+        public async Task<IActionResult> CompleteLesson(
+            int lessonId,
+            [FromBody] CompleteLessonRequest request
+        )
         {
             try
             {
                 var userId = GetUserId();
+
                 if (userId == null)
                     return Unauthorized(new { error = "Usuario no autenticado" });
 
                 var lesson = await _context.Lessons.FindAsync(lessonId);
+
                 if (lesson == null)
                     return NotFound(new { error = "Lección no encontrada" });
 
-                var result = await _progressRepo.UpdateLessonProgressAsync(userId.Value, lessonId, request.Score, request.Completed);
+                var existingProgress = await _progressRepo.GetByUserAndLessonAsync(
+                    userId.Value,
+                    lessonId
+                );
 
-                int xpEarned = 0;
-                var wasAlreadyCompleted = result.CompletedAt.HasValue &&
-                    result.CompletedAt.Value.Date < DateTime.UtcNow.Date;
-                var isFirstCompletion = request.Completed && !wasAlreadyCompleted;
-                if (isFirstCompletion)
-                {
-                    xpEarned = lesson.XpReward;
-                }
+                var wasAlreadyCompleted = existingProgress?.Completed == true;
 
-                var nextLesson = await _progressRepo.GetNextLessonAsync(userId.Value, lessonId);
+                var finalScore = ResolveFinalScore(request);
+
+                var result = await _progressService.CompleteLessonAsync(
+                    userId.Value,
+                    lessonId,
+                    finalScore
+                );
+
+                var xpEarned = result.Completed && !wasAlreadyCompleted
+                    ? ProgressService.CalculateXpEarned(result.Score)
+                    : 0;
+
+                var nextLesson = await _progressRepo.GetNextLessonAsync(
+                    userId.Value,
+                    lessonId
+                );
 
                 return Ok(new
                 {
@@ -138,8 +172,17 @@ namespace Api_TutorIdiomas.Controllers
                     nextLessonUnlocked = nextLesson != null,
                     nextLessonId = nextLesson?.Id,
                     nextLessonTitle = nextLesson?.Title,
-                    message = result.Completed ? $"¡Lección completada! +{xpEarned} XP" : "Sigue practicando"
+                    message = result.Completed
+                        ? $"{ProgressService.BuildCompletionMessage(result.Score)} +{xpEarned} XP"
+                        : ProgressService.BuildCompletionMessage(result.Score),
+                    correctOnFirstAttempt = request.CorrectOnFirstAttempt,
+                    correctedAfterRetry = request.CorrectedAfterRetry,
+                    totalPracticeExercises = request.TotalExercises
                 });
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { error = ex.Message });
             }
             catch (Exception ex)
             {
@@ -154,6 +197,7 @@ namespace Api_TutorIdiomas.Controllers
             try
             {
                 var userId = GetUserId();
+
                 if (userId == null)
                     return Unauthorized(new { error = "Usuario no autenticado" });
 
@@ -162,8 +206,11 @@ namespace Api_TutorIdiomas.Controllers
                 return Ok(new
                 {
                     currentStreak = streak,
-                    message = streak >= 7 ? "¡Racha increible! Sigue asi" :
-                             streak >= 3 ? "¡Bien! Manten tu racha" : "Practica cada dia para aumentar tu racha"
+                    message = streak >= 7
+                        ? "¡Racha increíble! Sigue así"
+                        : streak >= 3
+                            ? "¡Bien! Mantén tu racha"
+                            : "Practica cada día para aumentar tu racha"
                 });
             }
             catch (Exception ex)
@@ -179,6 +226,7 @@ namespace Api_TutorIdiomas.Controllers
             try
             {
                 var role = User.FindFirst(ClaimTypes.Role)?.Value;
+
                 if (role != "Admin")
                     return Forbid();
 
@@ -186,6 +234,7 @@ namespace Api_TutorIdiomas.Controllers
                     limit = 10;
 
                 var leaderboard = await _progressRepo.GetLeaderboardAsync(limit);
+
                 return Ok(leaderboard);
             }
             catch (Exception ex)
@@ -201,10 +250,12 @@ namespace Api_TutorIdiomas.Controllers
             try
             {
                 var userId = GetUserId();
+
                 if (userId == null)
                     return Unauthorized(new { error = "Usuario no autenticado" });
 
                 var userXp = await _progressRepo.GetTotalXpByUserAsync(userId.Value);
+
                 var userCompleted = await _context.UserProgress
                     .CountAsync(up => up.UserId == userId.Value && up.Completed);
 
@@ -230,7 +281,9 @@ namespace Api_TutorIdiomas.Controllers
                     completedLessons = userCompleted,
                     rank,
                     totalUsers,
-                    percentile = totalUsers > 0 ? Math.Round((double)(totalUsers - rank) / totalUsers * 100, 1) : 0
+                    percentile = totalUsers > 0
+                        ? Math.Round((double)(totalUsers - rank) / totalUsers * 100, 1)
+                        : 0
                 });
             }
             catch (Exception ex)
@@ -240,33 +293,59 @@ namespace Api_TutorIdiomas.Controllers
             }
         }
 
+        private static int ResolveFinalScore(CompleteLessonRequest request)
+        {
+            if (request.TotalExercises > 0 &&
+                (request.CorrectOnFirstAttempt > 0 || request.CorrectedAfterRetry > 0))
+            {
+                return ProgressService.CalculateFinalScore(
+                    request.CorrectOnFirstAttempt,
+                    request.CorrectedAfterRetry
+                );
+            }
+
+            return Math.Clamp(request.Score, 0, 100);
+        }
+
         private Guid? GetUserId()
         {
             var userIdStr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-            if (string.IsNullOrEmpty(userIdStr)) return null;
-            try { return Guid.Parse(userIdStr); }
-            catch (FormatException) { return null; }
+
+            if (string.IsNullOrEmpty(userIdStr))
+                return null;
+
+            try
+            {
+                return Guid.Parse(userIdStr);
+            }
+            catch (FormatException)
+            {
+                return null;
+            }
         }
 
         private async Task<int> CalculateStreak(Guid userId)
         {
             var progress = await _progressRepo.GetByUserAsync(userId);
+
             var completedDates = progress
                 .Where(p => p.Completed && p.CompletedAt.HasValue)
                 .Select(p => p.CompletedAt!.Value.Date)
                 .Distinct()
-                .OrderByDescending(d => d)
+                .OrderByDescending(date => date)
                 .ToList();
 
-            if (!completedDates.Any()) return 0;
+            if (!completedDates.Any())
+                return 0;
 
             var streak = 1;
             var currentDate = completedDates.First();
 
-            for (int i = 1; i < completedDates.Count; i++)
+            for (var index = 1; index < completedDates.Count; index++)
             {
                 var expectedDate = currentDate.AddDays(-1);
-                if (completedDates[i] == expectedDate)
+
+                if (completedDates[index] == expectedDate)
                 {
                     streak++;
                     currentDate = expectedDate;
@@ -282,11 +361,16 @@ namespace Api_TutorIdiomas.Controllers
 
         private async Task<int> GetUserLevel(Guid userId, int languageId)
         {
-            var progress = await _progressRepo.GetByUserAndLanguageAsync(userId, languageId);
+            var progress = await _progressRepo.GetByUserAndLanguageAsync(
+                userId,
+                languageId
+            );
+
             var completedCount = progress.Count(p => p.Completed);
 
             if (completedCount >= 20) return 3;
             if (completedCount >= 10) return 2;
+
             return 1;
         }
     }
@@ -294,7 +378,15 @@ namespace Api_TutorIdiomas.Controllers
     public class CompleteLessonRequest
     {
         public int Score { get; set; }
+
         public bool Completed { get; set; }
+
         public int TimeSpentSeconds { get; set; }
+
+        public int TotalExercises { get; set; } = 5;
+
+        public int CorrectOnFirstAttempt { get; set; }
+
+        public int CorrectedAfterRetry { get; set; }
     }
 }

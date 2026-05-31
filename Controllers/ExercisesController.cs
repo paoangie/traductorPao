@@ -15,6 +15,10 @@ namespace Api_TutorIdiomas.Controllers
     public class ExercisesController : ControllerBase
     {
         private const int DYNAMIC_ID_OFFSET = 1000000;
+        private const int PRACTICE_EXERCISE_COUNT = 5;
+        private const int MIN_SCORE_FOR_PASS = 70;
+        private const int FIRST_ATTEMPT_POINTS = 20;
+        private const int RETRY_ATTEMPT_POINTS = 10;
 
         private readonly IExerciseRepository _exerciseRepo;
         private readonly IProgressRepository _progressRepo;
@@ -50,32 +54,39 @@ namespace Api_TutorIdiomas.Controllers
         {
             try
             {
-                var userIdStr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-                if (string.IsNullOrEmpty(userIdStr))
-                    return Unauthorized(new { error = "Usuario no autenticado" });
+                var userId = GetAuthenticatedUserId();
 
                 var lesson = await _lessonRepo.GetByIdAsync(lessonId);
+
                 if (lesson == null)
                     return NotFound(new { error = "Lección no encontrada" });
 
                 var language = await _languageRepo.GetByIdAsync(lesson.LanguageId);
+
                 if (language == null)
                     return BadRequest(new { error = "La lección no tiene un idioma válido asociado" });
 
-                var userId = Guid.Parse(userIdStr);
-                var dynamicExercises = await _dynamicExerciseService.GenerateExercisesAsync(lessonId, userId, 3);
+                var dynamicExercises = await _dynamicExerciseService.GenerateExercisesAsync(
+                    lessonId,
+                    userId,
+                    PRACTICE_EXERCISE_COUNT
+                );
 
-                var result = dynamicExercises.Select((ex, i) => new
+                var result = dynamicExercises.Select((exercise, index) => new
                 {
-                    id = DYNAMIC_ID_OFFSET + lessonId * 100 + i,
+                    id = DYNAMIC_ID_OFFSET + lessonId * 100 + index,
                     lessonId,
                     languageId = lesson.LanguageId,
                     languageName = language.Name,
-                    type = ex.Type,
-                    content = (object)BuildContent(ex)
+                    type = exercise.Type,
+                    content = (object)BuildContent(exercise)
                 }).ToList();
 
                 return Ok(result);
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return Unauthorized(new { error = ex.Message });
             }
             catch (FormatException)
             {
@@ -91,44 +102,27 @@ namespace Api_TutorIdiomas.Controllers
             }
             catch (HttpRequestException ex)
             {
-                _logger.LogError(ex, "Error al generar ejercicios con IA para la lección {LessonId}", lessonId);
-                return StatusCode(502, new { error = "Error al generar ejercicios con el servicio de IA" });
+                _logger.LogError(
+                    ex,
+                    "Error al generar ejercicios con IA para la lección {LessonId}",
+                    lessonId
+                );
+
+                return StatusCode(
+                    502,
+                    new { error = "Error al generar ejercicios con el servicio de IA" }
+                );
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error al generar ejercicios para la lección {LessonId}", lessonId);
+                _logger.LogError(
+                    ex,
+                    "Error al generar ejercicios para la lección {LessonId}",
+                    lessonId
+                );
+
                 throw;
             }
-        }
-
-        private static object BuildContent(DynamicExerciseDto ex)
-        {
-            var content = new Dictionary<string, object?>
-            {
-                ["hint"] = ex.Hint,
-                ["lessonId"] = ex.LessonId,
-                ["lessonTitle"] = ex.LessonTitle,
-                ["languageId"] = ex.LanguageId,
-                ["languageName"] = ex.LanguageName
-            };
-
-            switch (ex.Type)
-            {
-                case "translation":
-                    content["question"] = ex.Question;
-                    content["answer"] = ex.Answer;
-                    break;
-                case "grammar":
-                    content["question"] = ex.Question;
-                    content["correct"] = ex.Correct;
-                    content["options"] = ex.Options ?? new List<string>();
-                    break;
-                case "pronunciation":
-                    content["phrase"] = ex.Phrase;
-                    break;
-            }
-
-            return content;
         }
 
         [HttpGet("{id}")]
@@ -140,8 +134,10 @@ namespace Api_TutorIdiomas.Controllers
                     return NotFound(new { error = "Ejercicio dinámico no disponible por ID" });
 
                 var exercise = await _exerciseRepo.GetByIdAsync(id);
+
                 if (exercise == null)
                     return NotFound(new { error = "Ejercicio no encontrado" });
+
                 return Ok(exercise);
             }
             catch (Exception ex)
@@ -152,46 +148,99 @@ namespace Api_TutorIdiomas.Controllers
         }
 
         [HttpPost("{id}/submit")]
-        public async Task<IActionResult> SubmitAnswer(int id, [FromBody] ExerciseSubmitDto request)
+        public async Task<IActionResult> SubmitAnswer(
+            int id,
+            [FromBody] ExerciseSubmitDto request
+        )
         {
             try
             {
-                var userIdStr = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-                if (string.IsNullOrEmpty(userIdStr))
-                    return Unauthorized(new { error = "Usuario no autenticado" });
+                var userId = GetAuthenticatedUserId();
 
-                var userId = Guid.Parse(userIdStr);
-
-                if (id >= DYNAMIC_ID_OFFSET || !string.IsNullOrEmpty(request.ExerciseType))
-                    return Ok(await EvaluateDynamicExercise(id, request, userId));
+                if (id >= DYNAMIC_ID_OFFSET ||
+                    !string.IsNullOrWhiteSpace(request.ExerciseType))
+                {
+                    var dynamicResult = await EvaluateDynamicExercise(id, request, userId);
+                    return Ok(dynamicResult);
+                }
 
                 var exercise = await _exerciseRepo.GetByIdAsync(id);
+
                 if (exercise == null)
                     return NotFound(new { error = "Ejercicio no encontrado" });
 
                 var lesson = await _lessonRepo.GetByIdAsync(exercise.LessonId);
+
                 if (lesson == null)
                     return NotFound(new { error = "Lección no encontrada" });
 
                 var language = await _languageRepo.GetByIdAsync(lesson.LanguageId);
+
                 if (language == null)
                     return BadRequest(new { error = "La lección no tiene un idioma válido asociado" });
 
-                var theoryContext = await _dynamicExerciseService.GetTheoryContextForLessonAsync(lesson.Id);
+                var theoryContext = await _dynamicExerciseService.GetTheoryContextForLessonAsync(
+                    lesson.Id
+                );
+
                 var result = exercise.Type switch
                 {
-                    "translation" => await _scoringService.EvaluateTranslationAsync(request.UserAnswer, exercise.Content, language.Name, lesson.Title, theoryContext),
-                    "grammar" => await _scoringService.EvaluateGrammarAsync(request.UserAnswer, exercise.Content, language.Name, lesson.Title, theoryContext),
-                    "pronunciation" => _scoringService.EvaluatePronunciation(request.UserAnswer, request.ExpectedPhrase),
-                    _ => throw new ArgumentException($"Tipo de ejercicio desconocido: {exercise.Type}")
+                    "translation" => await _scoringService.EvaluateTranslationAsync(
+                        request.UserAnswer,
+                        exercise.Content,
+                        language.Name,
+                        lesson.Title,
+                        theoryContext
+                    ),
+
+                    "grammar" => await _scoringService.EvaluateGrammarAsync(
+                        request.UserAnswer,
+                        exercise.Content,
+                        language.Name,
+                        lesson.Title,
+                        theoryContext
+                    ),
+
+                    "pronunciation" => _scoringService.EvaluatePronunciation(
+                        request.UserAnswer,
+                        request.ExpectedPhrase
+                    ),
+
+                    _ => throw new ArgumentException(
+                        $"Tipo de ejercicio desconocido: {exercise.Type}"
+                    )
                 };
 
-                await _progressRepo.UpdateExerciseScoreAsync(userId, id, result.Score);
+                var expectedAnswer = ExtractCorrectAnswer(exercise);
+                var shouldRetry = !IsCorrect(result.Score);
 
-                if (result.Score < 70)
-                    await TrackMistake(userId, lesson.LanguageId, exercise.Type, request.UserAnswer, ExtractCorrectAnswer(exercise));
+                await _progressRepo.UpdateExerciseScoreAsync(
+                    userId,
+                    id,
+                    result.Score
+                );
 
-                return BuildSubmitResponse(result);
+                if (shouldRetry)
+                {
+                    await TrackMistake(
+                        userId,
+                        lesson.LanguageId,
+                        exercise.Type,
+                        request.UserAnswer,
+                        expectedAnswer
+                    );
+                }
+
+                return Ok(BuildSubmitPayload(
+                    result,
+                    expectedAnswer,
+                    shouldRetry,
+                    request.AttemptNumber
+                ));
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                return Unauthorized(new { error = ex.Message });
             }
             catch (FormatException)
             {
@@ -207,8 +256,16 @@ namespace Api_TutorIdiomas.Controllers
             }
             catch (HttpRequestException ex)
             {
-                _logger.LogError(ex, "Error de IA al enviar respuesta para ejercicio {Id}", id);
-                return StatusCode(502, new { error = "Error al evaluar la respuesta con el servicio de IA" });
+                _logger.LogError(
+                    ex,
+                    "Error de IA al enviar respuesta para ejercicio {Id}",
+                    id
+                );
+
+                return StatusCode(
+                    502,
+                    new { error = "Error al evaluar la respuesta con el servicio de IA" }
+                );
             }
             catch (Exception ex)
             {
@@ -226,10 +283,12 @@ namespace Api_TutorIdiomas.Controllers
                     return Ok(new { hint = "Pista incluida en el contenido del ejercicio dinámico" });
 
                 var exercise = await _exerciseRepo.GetByIdAsync(id);
+
                 if (exercise == null)
                     return NotFound(new { error = "Ejercicio no encontrado" });
 
                 var hint = ExtractHint(exercise);
+
                 return Ok(new { hint });
             }
             catch (Exception ex)
@@ -239,58 +298,192 @@ namespace Api_TutorIdiomas.Controllers
             }
         }
 
-        private async Task<object> EvaluateDynamicExercise(int id, ExerciseSubmitDto request, Guid userId)
+        private async Task<object> EvaluateDynamicExercise(
+            int id,
+            ExerciseSubmitDto request,
+            Guid userId
+        )
         {
             var lessonId = request.LessonId ?? TryGetLessonIdFromDynamicId(id);
+
             if (lessonId == null)
-                throw new ArgumentException("No se pudo determinar la lección del ejercicio dinámico");
+                throw new ArgumentException(
+                    "No se pudo determinar la lección del ejercicio dinámico"
+                );
 
             var lesson = await _lessonRepo.GetByIdAsync(lessonId.Value);
+
             if (lesson == null)
                 throw new ArgumentException("Lección no encontrada");
 
-            if (request.LanguageId.HasValue && request.LanguageId.Value != lesson.LanguageId)
-                throw new ArgumentException("El idioma enviado no coincide con el idioma de la lección");
+            if (request.LanguageId.HasValue &&
+                request.LanguageId.Value != lesson.LanguageId)
+            {
+                throw new ArgumentException(
+                    "El idioma enviado no coincide con el idioma de la lección"
+                );
+            }
 
             var language = await _languageRepo.GetByIdAsync(lesson.LanguageId);
+
             if (language == null)
-                throw new InvalidOperationException("La lección no tiene un idioma válido asociado");
+                throw new InvalidOperationException(
+                    "La lección no tiene un idioma válido asociado"
+                );
 
-            var type = request.ExerciseType ?? ExtractTypeFromContent(request.ExerciseContent) ?? "translation";
-            var content = request.ExerciseContent ?? "{}";
-            var theoryContext = await _dynamicExerciseService.GetTheoryContextForLessonAsync(lesson.Id);
+            var exerciseType =
+                request.ExerciseType ??
+                ExtractTypeFromContent(request.ExerciseContent) ??
+                "translation";
 
-            var result = type switch
+            var exerciseContent = request.ExerciseContent ?? "{}";
+
+            var theoryContext = await _dynamicExerciseService.GetTheoryContextForLessonAsync(
+                lesson.Id
+            );
+
+            var result = exerciseType switch
             {
-                "translation" => await _scoringService.EvaluateTranslationAsync(request.UserAnswer, content, language.Name, lesson.Title, theoryContext),
-                "grammar" => await _scoringService.EvaluateGrammarAsync(request.UserAnswer, content, language.Name, lesson.Title, theoryContext),
-                "pronunciation" => _scoringService.EvaluatePronunciation(request.UserAnswer, request.ExpectedPhrase),
-                _ => throw new ArgumentException($"Tipo de ejercicio desconocido: {type}")
+                "translation" => await _scoringService.EvaluateTranslationAsync(
+                    request.UserAnswer,
+                    exerciseContent,
+                    language.Name,
+                    lesson.Title,
+                    theoryContext
+                ),
+
+                "grammar" => await _scoringService.EvaluateGrammarAsync(
+                    request.UserAnswer,
+                    exerciseContent,
+                    language.Name,
+                    lesson.Title,
+                    theoryContext
+                ),
+
+                "pronunciation" => _scoringService.EvaluatePronunciation(
+                    request.UserAnswer,
+                    request.ExpectedPhrase
+                ),
+
+                _ => throw new ArgumentException(
+                    $"Tipo de ejercicio desconocido: {exerciseType}"
+                )
             };
 
-            if (result.Score < 70)
-                await TrackMistake(userId, lesson.LanguageId, type, request.UserAnswer, ExtractCorrectAnswer(type, content, request.ExpectedPhrase));
+            var expectedAnswer = ExtractCorrectAnswer(
+                exerciseType,
+                exerciseContent,
+                request.ExpectedPhrase
+            );
 
-            return BuildSubmitPayload(result);
+            var shouldRetry = !IsCorrect(result.Score);
+
+            if (shouldRetry)
+            {
+                await TrackMistake(
+                    userId,
+                    lesson.LanguageId,
+                    exerciseType,
+                    request.UserAnswer,
+                    expectedAnswer
+                );
+            }
+
+            return BuildSubmitPayload(
+                result,
+                expectedAnswer,
+                shouldRetry,
+                request.AttemptNumber
+            );
         }
 
-        private static IActionResult BuildSubmitResponse(ExerciseScoreResult result)
+        private static object BuildContent(DynamicExerciseDto exercise)
         {
-            return new OkObjectResult(BuildSubmitPayload(result));
+            var content = new Dictionary<string, object?>
+            {
+                ["type"] = exercise.Type,
+                ["hint"] = exercise.Hint,
+                ["lessonId"] = exercise.LessonId,
+                ["lessonTitle"] = exercise.LessonTitle,
+                ["languageId"] = exercise.LanguageId,
+                ["languageName"] = exercise.LanguageName
+            };
+
+            switch (exercise.Type)
+            {
+                case "translation":
+                    content["question"] = exercise.Question;
+                    content["answer"] = exercise.Answer;
+                    break;
+
+                case "grammar":
+                    content["question"] = exercise.Question;
+                    content["correct"] = exercise.Correct;
+                    content["options"] = exercise.Options ?? new List<string>();
+                    break;
+
+                case "pronunciation":
+                    content["phrase"] = exercise.Phrase;
+                    break;
+            }
+
+            return content;
         }
 
-        private static object BuildSubmitPayload(ExerciseScoreResult result)
+        private static object BuildSubmitPayload(
+            ExerciseScoreResult result,
+            string expectedAnswer,
+            bool shouldRetry,
+            int attemptNumber = 1
+        )
         {
+            var correct = IsCorrect(result.Score);
+
+            var pointsEarned = correct
+                ? attemptNumber <= 1
+                    ? FIRST_ATTEMPT_POINTS
+                    : RETRY_ATTEMPT_POINTS
+                : 0;
+
             return new
             {
-                result.Score,
-                result.Feedback,
-                correct = result.Score >= 70,
-                message = result.Score >= 70 ? "Respuesta aceptada" : "Respuesta no aceptada"
+                score = result.Score,
+                feedback = result.Feedback,
+                correct,
+                expectedAnswer,
+                shouldRetry,
+                attemptNumber,
+                pointsEarned,
+                message = correct
+                    ? attemptNumber <= 1
+                        ? "Respuesta aceptada"
+                        : "Respuesta corregida"
+                    : "Respuesta no aceptada. Este ejercicio debe repetirse."
             };
         }
 
-        private async Task TrackMistake(Guid userId, int languageId, string type, string userAnswer, string correctAnswer)
+        private Guid GetAuthenticatedUserId()
+        {
+            var userIdValue = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+
+            if (string.IsNullOrWhiteSpace(userIdValue))
+                throw new UnauthorizedAccessException("Usuario no autenticado");
+
+            return Guid.Parse(userIdValue);
+        }
+
+        private static bool IsCorrect(int score)
+        {
+            return score >= MIN_SCORE_FOR_PASS;
+        }
+
+        private async Task TrackMistake(
+            Guid userId,
+            int languageId,
+            string type,
+            string userAnswer,
+            string correctAnswer
+        )
         {
             try
             {
@@ -327,8 +520,11 @@ namespace Api_TutorIdiomas.Controllers
 
             try
             {
-                var doc = JsonDocument.Parse(content);
-                return doc.RootElement.TryGetProperty("type", out var type) ? type.GetString() : null;
+                using var document = JsonDocument.Parse(content);
+
+                return document.RootElement.TryGetProperty("type", out var type)
+                    ? type.GetString()
+                    : null;
             }
             catch
             {
@@ -338,19 +534,38 @@ namespace Api_TutorIdiomas.Controllers
 
         private static string ExtractCorrectAnswer(Models.Exercise exercise)
         {
-            return ExtractCorrectAnswer(exercise.Type, exercise.Content, null);
+            return ExtractCorrectAnswer(
+                exercise.Type,
+                exercise.Content,
+                null
+            );
         }
 
-        private static string ExtractCorrectAnswer(string type, string content, string? expectedPhrase)
+        private static string ExtractCorrectAnswer(
+            string type,
+            string content,
+            string? expectedPhrase
+        )
         {
             try
             {
-                var doc = JsonDocument.Parse(content);
+                using var document = JsonDocument.Parse(content);
+
                 return type switch
                 {
-                    "translation" => doc.RootElement.TryGetProperty("answer", out var a) ? a.GetString() ?? "" : "",
-                    "grammar" => doc.RootElement.TryGetProperty("correct", out var c) ? c.GetString() ?? "" : "",
-                    "pronunciation" => expectedPhrase ?? (doc.RootElement.TryGetProperty("phrase", out var p) ? p.GetString() ?? "" : ""),
+                    "translation" => document.RootElement.TryGetProperty("answer", out var answer)
+                        ? answer.GetString() ?? ""
+                        : "",
+
+                    "grammar" => document.RootElement.TryGetProperty("correct", out var correct)
+                        ? correct.GetString() ?? ""
+                        : "",
+
+                    "pronunciation" => expectedPhrase ??
+                        (document.RootElement.TryGetProperty("phrase", out var phrase)
+                            ? phrase.GetString() ?? ""
+                            : ""),
+
                     _ => ""
                 };
             }
@@ -362,10 +577,18 @@ namespace Api_TutorIdiomas.Controllers
 
         private static string ExtractHint(Models.Exercise exercise)
         {
-            var doc = JsonDocument.Parse(exercise.Content);
-            return doc.RootElement.TryGetProperty("hint", out var hintProp)
-                ? hintProp.GetString() ?? ""
-                : "";
+            try
+            {
+                using var document = JsonDocument.Parse(exercise.Content);
+
+                return document.RootElement.TryGetProperty("hint", out var hint)
+                    ? hint.GetString() ?? ""
+                    : "";
+            }
+            catch
+            {
+                return "";
+            }
         }
     }
 }

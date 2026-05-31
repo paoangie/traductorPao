@@ -25,6 +25,7 @@ namespace Api_TutorIdiomas.Controllers
             {
                 var resultados = new List<string>();
 
+                // 1. Inicializar Idiomas
                 if (!await _context.Languages.AnyAsync())
                 {
                     var languages = LanguageConstants.All.Select(kv => new Language
@@ -37,14 +38,35 @@ namespace Api_TutorIdiomas.Controllers
 
                     _context.Languages.AddRange(languages);
                     resultados.Add("Idiomas base creados");
+                    await _context.SaveChangesAsync();
                 }
 
-                if (!await _context.Lessons.AnyAsync())
+                // 2. Inicializar Lecciones (6 por idioma)
+                var leccionesAgregadas = 0;
+                var leccionesBase = GetInitialLessons();
+
+                foreach (var leccion in leccionesBase)
                 {
-                    _context.Lessons.AddRange(GetInitialLessons());
-                    resultados.Add("Lecciones base creadas sin ejercicios demo");
+                    // Evitar duplicados por LanguageId y Título
+                    var existe = await _context.Lessons.AnyAsync(l =>
+                        l.LanguageId == leccion.LanguageId && l.Title == leccion.Title);
+
+                    if (!existe)
+                    {
+                        // Asegurar que no chocamos con IDs manuales si ya existen otros
+                        leccion.Id = 0;
+                        _context.Lessons.Add(leccion);
+                        leccionesAgregadas++;
+                    }
                 }
 
+                if (leccionesAgregadas > 0)
+                {
+                    await _context.SaveChangesAsync();
+                    resultados.Add($"{leccionesAgregadas} lecciones base agregadas/actualizadas");
+                }
+
+                // 3. Usuarios de desarrollo
                 if (!await _context.Users.AnyAsync(u => u.Email == "admin@tutor.com"))
                 {
                     var admin = new User
@@ -81,7 +103,7 @@ namespace Api_TutorIdiomas.Controllers
                 {
                     message = "Sistema de PaoLingua inicializado correctamente",
                     detalles = resultados,
-                    nota = "Los ejercicios se generan con IA usando la teoría registrada de cada lección. No se crean ejercicios demo quemados."
+                    nota = "Los ejercicios se generan dinámicamente con IA usando la teoría de cada lección."
                 });
             }
             catch (Exception ex)
@@ -97,7 +119,7 @@ namespace Api_TutorIdiomas.Controllers
             return Conflict(new
             {
                 message = "La carga de ejercicios demo está deshabilitada.",
-                detalle = "Los ejercicios deben generarse con IA usando la teoría real asociada a cada lección."
+                detalle = "El sistema utiliza generación dinámica por IA basada en teoría para garantizar coherencia."
             });
         }
 
@@ -110,7 +132,6 @@ namespace Api_TutorIdiomas.Controllers
                 {
                     Idiomas = await _context.Languages.CountAsync(),
                     Lecciones = await _context.Lessons.CountAsync(),
-                    Ejercicios = await _context.Exercises.CountAsync(),
                     Usuarios = await _context.Users.CountAsync(),
                     Progresos = await _context.UserProgress.CountAsync()
                 };
@@ -124,30 +145,54 @@ namespace Api_TutorIdiomas.Controllers
             }
         }
 
-        private static Lesson[] GetInitialLessons()
+        private static List<Lesson> GetInitialLessons()
         {
-            return new[]
-            {
-                new Lesson { Id = 1, LanguageId = LanguageConstants.Ingles, Title = "Saludos y Presentaciones", Level = 1, XpReward = 50 },
-                new Lesson { Id = 2, LanguageId = LanguageConstants.Ingles, Title = "Números y Contar", Level = 1, XpReward = 50 },
-                new Lesson { Id = 3, LanguageId = LanguageConstants.Ingles, Title = "Familia y Amigos", Level = 1, XpReward = 60 },
+            var lessons = new List<Lesson>();
 
-                new Lesson { Id = 4, LanguageId = LanguageConstants.Espanol, Title = "Saludos en Español", Level = 1, XpReward = 50 },
-                new Lesson { Id = 8, LanguageId = LanguageConstants.Espanol, Title = "Vocabulario Básico", Level = 1, XpReward = 50 },
-                new Lesson { Id = 9, LanguageId = LanguageConstants.Espanol, Title = "Verbos Esenciales", Level = 1, XpReward = 50 },
+            // Configuración de 6 lecciones por cada idioma en LanguageConstants
+            // 1: Inglés, 2: Español, 3: Francés, 4: Alemán, 5: Italiano
 
-                new Lesson { Id = 5, LanguageId = LanguageConstants.Frances, Title = "Saludos en Francés", Level = 1, XpReward = 50 },
-                new Lesson { Id = 10, LanguageId = LanguageConstants.Frances, Title = "Vocabulario Básico en Francés", Level = 1, XpReward = 50 },
-                new Lesson { Id = 11, LanguageId = LanguageConstants.Frances, Title = "Verbos Esenciales en Francés", Level = 1, XpReward = 50 },
+            // --- INGLÉS (1) ---
+            lessons.Add(new Lesson { LanguageId = 1, Title = "Greetings and Introductions", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 1, Title = "Numbers and Counting", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 1, Title = "Colors and Basic Objects", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 1, Title = "Family and People", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 1, Title = "Food and Drinks", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 1, Title = "Daily Phrases", Level = 1, XpReward = 50 });
 
-                new Lesson { Id = 6, LanguageId = LanguageConstants.Aleman, Title = "Saludos en Alemán", Level = 1, XpReward = 50 },
-                new Lesson { Id = 12, LanguageId = LanguageConstants.Aleman, Title = "Vocabulario Básico en Alemán", Level = 1, XpReward = 50 },
-                new Lesson { Id = 13, LanguageId = LanguageConstants.Aleman, Title = "Verbos Esenciales en Alemán", Level = 1, XpReward = 50 },
+            // --- ESPAÑOL (2) ---
+            lessons.Add(new Lesson { LanguageId = 2, Title = "Saludos y Presentaciones", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 2, Title = "Números y Contar", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 2, Title = "Colores y Objetos Básicos", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 2, Title = "Familia y Personas", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 2, Title = "Comida y Bebidas", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 2, Title = "Frases Cotidianas", Level = 1, XpReward = 50 });
 
-                new Lesson { Id = 7, LanguageId = LanguageConstants.Italiano, Title = "Saludos en Italiano", Level = 1, XpReward = 50 },
-                new Lesson { Id = 14, LanguageId = LanguageConstants.Italiano, Title = "Vocabulario Básico en Italiano", Level = 1, XpReward = 50 },
-                new Lesson { Id = 15, LanguageId = LanguageConstants.Italiano, Title = "Verbos Esenciales en Italiano", Level = 1, XpReward = 50 },
-            };
+            // --- FRANCÉS (3) ---
+            lessons.Add(new Lesson { LanguageId = 3, Title = "Salutations et Présentations", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 3, Title = "Nombres et Compter", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 3, Title = "Couleurs et Objets de Base", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 3, Title = "Famille et Personnes", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 3, Title = "Nourriture et Boissons", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 3, Title = "Phrases Quotidiennes", Level = 1, XpReward = 50 });
+
+            // --- ALEMÁN (4) ---
+            lessons.Add(new Lesson { LanguageId = 4, Title = "Begrüßung und Vorstellung", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 4, Title = "Zahlen und Zählen", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 4, Title = "Farben und Grundobjekte", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 4, Title = "Familie und Menschen", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 4, Title = "Essen und Trinken", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 4, Title = "Alltagssätze", Level = 1, XpReward = 50 });
+
+            // --- ITALIANO (5) ---
+            lessons.Add(new Lesson { LanguageId = 5, Title = "Saluti e Presentazioni", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 5, Title = "Numeri e Contare", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 5, Title = "Colori e Oggetti di Base", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 5, Title = "Famiglia e Persone", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 5, Title = "Cibo e Bevande", Level = 1, XpReward = 50 });
+            lessons.Add(new Lesson { LanguageId = 5, Title = "Frasi Quotidiane", Level = 1, XpReward = 50 });
+
+            return lessons;
         }
     }
 }

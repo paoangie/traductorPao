@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using System.Text.Json;
 
 namespace Api_TutorIdiomas.Services
@@ -12,7 +14,8 @@ namespace Api_TutorIdiomas.Services
 
         public ExerciseScoringService(
             GroqAiService groqAiService,
-            ILogger<ExerciseScoringService> logger)
+            ILogger<ExerciseScoringService> logger
+        )
         {
             _groqAiService = groqAiService;
             _logger = logger;
@@ -31,7 +34,12 @@ namespace Api_TutorIdiomas.Services
             var expectedAnswer = GetString(content, "answer");
 
             if (string.IsNullOrWhiteSpace(expectedAnswer))
-                throw new ArgumentException("El ejercicio de traducción no tiene respuesta esperada");
+                throw new ArgumentException(
+                    "El ejercicio de traducción no tiene respuesta esperada"
+                );
+
+            var localScore = CalculateTranslationScore(userAnswer, expectedAnswer);
+            var isExactAnswer = IsExactMatch(userAnswer, expectedAnswer);
 
             try
             {
@@ -44,17 +52,27 @@ namespace Api_TutorIdiomas.Services
                     theoryContext
                 );
 
-                return new ExerciseScoreResult(aiResult.Score, aiResult.Feedback);
+                return NormalizeAiResult(
+                    aiResult.Score,
+                    aiResult.Feedback,
+                    isExactAnswer,
+                    localScore,
+                    expectedAnswer
+                );
             }
-            catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or JsonException)
+            catch (Exception ex)
+                when (ex is HttpRequestException or InvalidOperationException or JsonException)
             {
-                _logger.LogWarning(ex, "No se pudo evaluar traducción con IA; se usará respaldo local controlado");
-                var score = CalculateTranslationScore(userAnswer, expectedAnswer);
-                var feedback = IsPassingScore(score)
-                    ? "Respuesta aceptada por comparación local. La retroalimentación de IA no estuvo disponible."
+                _logger.LogWarning(
+                    ex,
+                    "No se pudo evaluar traducción con IA; se usará respaldo local controlado"
+                );
+
+                var feedback = IsPassingScore(localScore)
+                    ? "Respuesta correcta. La evaluación local confirma que coincide con la respuesta esperada."
                     : $"La respuesta no coincide con la esperada para esta lección. Respuesta esperada: {expectedAnswer}";
 
-                return new ExerciseScoreResult(score, feedback);
+                return new ExerciseScoreResult(localScore, feedback);
             }
         }
 
@@ -71,7 +89,12 @@ namespace Api_TutorIdiomas.Services
             var correctAnswer = GetString(content, "correct");
 
             if (string.IsNullOrWhiteSpace(correctAnswer))
-                throw new ArgumentException("El ejercicio de gramática no tiene respuesta correcta");
+                throw new ArgumentException(
+                    "El ejercicio de gramática no tiene respuesta correcta"
+                );
+
+            var isExactAnswer = IsExactMatch(userAnswer, correctAnswer);
+            var localScore = isExactAnswer ? PerfectScore : 0;
 
             try
             {
@@ -84,18 +107,74 @@ namespace Api_TutorIdiomas.Services
                     theoryContext
                 );
 
-                return new ExerciseScoreResult(aiResult.Score, aiResult.Feedback);
+                return NormalizeAiResult(
+                    aiResult.Score,
+                    aiResult.Feedback,
+                    isExactAnswer,
+                    localScore,
+                    correctAnswer
+                );
             }
-            catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or JsonException)
+            catch (Exception ex)
+                when (ex is HttpRequestException or InvalidOperationException or JsonException)
             {
-                _logger.LogWarning(ex, "No se pudo evaluar gramática con IA; se usará respaldo local controlado");
-                var score = NormalizeAnswer(userAnswer) == NormalizeAnswer(correctAnswer) ? PerfectScore : 0;
-                var feedback = score == PerfectScore
-                    ? "Respuesta correcta por comparación local. La retroalimentación de IA no estuvo disponible."
+                _logger.LogWarning(
+                    ex,
+                    "No se pudo evaluar gramática con IA; se usará respaldo local controlado"
+                );
+
+                var feedback = localScore == PerfectScore
+                    ? "Respuesta correcta. La evaluación local confirma que coincide con la respuesta esperada."
                     : $"La respuesta no coincide con la regla de esta lección. Respuesta esperada: {correctAnswer}";
 
-                return new ExerciseScoreResult(score, feedback);
+                return new ExerciseScoreResult(localScore, feedback);
             }
+        }
+
+        public ExerciseScoreResult EvaluateTranslation(
+            string userAnswer,
+            string exerciseContent
+        )
+        {
+            var content = DeserializeContent(exerciseContent);
+            var expectedAnswer = GetString(content, "answer");
+
+            if (string.IsNullOrWhiteSpace(expectedAnswer))
+                throw new ArgumentException(
+                    "El ejercicio de traducción no tiene respuesta esperada"
+                );
+
+            var score = CalculateTranslationScore(userAnswer, expectedAnswer);
+
+            var feedback = IsPassingScore(score)
+                ? "Respuesta correcta."
+                : $"La respuesta no coincide con la esperada. Respuesta esperada: {expectedAnswer}";
+
+            return new ExerciseScoreResult(score, feedback);
+        }
+
+        public ExerciseScoreResult EvaluateGrammar(
+            string userAnswer,
+            string exerciseContent
+        )
+        {
+            var content = DeserializeContent(exerciseContent);
+            var correctAnswer = GetString(content, "correct");
+
+            if (string.IsNullOrWhiteSpace(correctAnswer))
+                throw new ArgumentException(
+                    "El ejercicio de gramática no tiene respuesta correcta"
+                );
+
+            var score = IsExactMatch(userAnswer, correctAnswer)
+                ? PerfectScore
+                : 0;
+
+            var feedback = score == PerfectScore
+                ? "Respuesta correcta."
+                : $"La respuesta no coincide con la regla de esta lección. Respuesta esperada: {correctAnswer}";
+
+            return new ExerciseScoreResult(score, feedback);
         }
 
         public ExerciseScoreResult EvaluatePronunciation(
@@ -136,8 +215,9 @@ namespace Api_TutorIdiomas.Services
                 return 0;
 
             var matches = userWords.Count(word => expectedWords.Contains(word));
+            var score = matches * PerfectScore / expectedWords.Length;
 
-            return matches * PerfectScore / expectedWords.Length;
+            return Math.Clamp(score, 0, PerfectScore);
         }
 
         public int CalculateSimilarity(string input, string expected)
@@ -167,17 +247,119 @@ namespace Api_TutorIdiomas.Services
             return Math.Clamp(score, 0, PerfectScore);
         }
 
-        private static Dictionary<string, JsonElement> DeserializeContent(string exerciseContent)
+        private static ExerciseScoreResult NormalizeAiResult(
+            int aiScore,
+            string? aiFeedback,
+            bool isExactAnswer,
+            int localScore,
+            string expectedAnswer
+        )
         {
-            return JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(exerciseContent)
-                ?? new Dictionary<string, JsonElement>();
+            var feedback = string.IsNullOrWhiteSpace(aiFeedback)
+                ? "Evaluación realizada correctamente."
+                : aiFeedback.Trim();
+
+            if (isExactAnswer)
+            {
+                return new ExerciseScoreResult(
+                    PerfectScore,
+                    EnsurePositiveFeedback(feedback, expectedAnswer)
+                );
+            }
+
+            var normalizedScore = NormalizeScore(aiScore, feedback, localScore);
+
+            if (FeedbackSaysCorrect(feedback) && normalizedScore < MinScoreForPass)
+            {
+                normalizedScore = Math.Max(localScore, MinScoreForPass);
+            }
+
+            if (localScore >= MinScoreForPass && normalizedScore < MinScoreForPass)
+            {
+                normalizedScore = localScore;
+            }
+
+            normalizedScore = Math.Clamp(normalizedScore, 0, PerfectScore);
+
+            return new ExerciseScoreResult(normalizedScore, feedback);
         }
 
-        private static string GetString(Dictionary<string, JsonElement> content, string key)
+        private static int NormalizeScore(
+            int rawScore,
+            string feedback,
+            int localScore
+        )
         {
-            return content.TryGetValue(key, out var value) && value.ValueKind != JsonValueKind.Null
-                ? value.ToString()
-                : string.Empty;
+            if (rawScore <= 0)
+                return Math.Clamp(localScore, 0, PerfectScore);
+
+            if (rawScore == 1)
+            {
+                if (FeedbackSaysCorrect(feedback) || localScore >= MinScoreForPass)
+                    return PerfectScore;
+
+                return 10;
+            }
+
+            if (rawScore > 1 && rawScore <= 10)
+                return Math.Clamp(rawScore * 10, 0, PerfectScore);
+
+            if (rawScore > 100)
+                return PerfectScore;
+
+            return Math.Clamp(rawScore, 0, PerfectScore);
+        }
+
+        private static bool FeedbackSaysCorrect(string feedback)
+        {
+            var normalizedFeedback = NormalizeAnswer(feedback);
+
+            return normalizedFeedback.Contains("correcta") ||
+                   normalizedFeedback.Contains("correcto") ||
+                   normalizedFeedback.Contains("bien") ||
+                   normalizedFeedback.Contains("aceptada") ||
+                   normalizedFeedback.Contains("accepted") ||
+                   normalizedFeedback.Contains("correct");
+        }
+
+        private static string EnsurePositiveFeedback(
+            string feedback,
+            string expectedAnswer
+        )
+        {
+            if (FeedbackSaysCorrect(feedback))
+                return feedback;
+
+            return $"Respuesta correcta. La respuesta esperada es: {expectedAnswer}.";
+        }
+
+        private static Dictionary<string, JsonElement> DeserializeContent(
+            string exerciseContent
+        )
+        {
+            if (string.IsNullOrWhiteSpace(exerciseContent))
+                return new Dictionary<string, JsonElement>();
+
+            return JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(
+                exerciseContent
+            ) ?? new Dictionary<string, JsonElement>();
+        }
+
+        private static string GetString(
+            Dictionary<string, JsonElement> content,
+            string key
+        )
+        {
+            if (!content.TryGetValue(key, out var value) ||
+                value.ValueKind == JsonValueKind.Null ||
+                value.ValueKind == JsonValueKind.Undefined)
+            {
+                return string.Empty;
+            }
+
+            return value.ValueKind == JsonValueKind.String
+                ? value.GetString() ?? string.Empty
+                : value.ToString();
         }
 
         private static bool IsPassingScore(int score)
@@ -185,9 +367,39 @@ namespace Api_TutorIdiomas.Services
             return score >= MinScoreForPass;
         }
 
+        private static bool IsExactMatch(string? value, string? expected)
+        {
+            return NormalizeAnswer(value) == NormalizeAnswer(expected);
+        }
+
         private static string NormalizeAnswer(string? value)
         {
-            return value?.Trim().ToLowerInvariant() ?? "";
+            if (string.IsNullOrWhiteSpace(value))
+                return string.Empty;
+
+            var normalized = value
+                .Trim()
+                .ToLowerInvariant()
+                .Normalize(NormalizationForm.FormD);
+
+            var builder = new StringBuilder();
+
+            foreach (var character in normalized)
+            {
+                var category = CharUnicodeInfo.GetUnicodeCategory(character);
+
+                if (category != UnicodeCategory.NonSpacingMark &&
+                    !char.IsPunctuation(character))
+                {
+                    builder.Append(character);
+                }
+            }
+
+            return builder
+                .ToString()
+                .Normalize(NormalizationForm.FormC)
+                .Replace("  ", " ")
+                .Trim();
         }
 
         private static string[] SplitWords(string value)
